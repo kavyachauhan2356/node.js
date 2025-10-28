@@ -1,0 +1,98 @@
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
+const LOCK_TTL_MS = 60 * 1000; // 1 minute
+
+// Seats 1..10
+const seats = {};
+for (let i = 1; i <= 10; i++) {
+  seats[i] = {
+    status: "available",
+    lockedBy: null,
+    lockExpiresAt: null,
+    lockTimer: null,
+  };
+}
+
+// Helper: expire lock if time has passed
+function expireLock(id) {
+  const seat = seats[id];
+  if (
+    seat.status === "locked" &&
+    seat.lockExpiresAt &&
+    Date.now() >= seat.lockExpiresAt
+  ) {
+    clearTimeout(seat.lockTimer);
+    seats[id] = {
+      status: "available",
+      lockedBy: null,
+      lockExpiresAt: null,
+      lockTimer: null,
+    };
+  }
+}
+
+// GET /seats
+app.get("/seats", (req, res) => {
+  const response = {};
+  for (const [id, seat] of Object.entries(seats)) {
+    expireLock(id);
+    response[id] = { status: seats[id].status };
+  }
+  res.json(response);
+});
+
+// POST /lock/:id
+app.post("/lock/:id", (req, res) => {
+  const id = req.params.id;
+  const seat = seats[id];
+  if (!seat) return res.status(404).json({ message: "Seat not found." });
+
+  expireLock(id);
+
+  if (seat.status === "available") {
+    seat.status = "locked";
+    seat.lockExpiresAt = Date.now() + LOCK_TTL_MS;
+    seat.lockTimer = setTimeout(() => expireLock(id), LOCK_TTL_MS);
+
+    return res.json({
+      message: `Seat ${id} locked successfully. Confirm within 1 minute.`,
+    });
+  }
+
+  if (seat.status === "locked") {
+    return res.status(400).json({ message: `Seat ${id} is already locked.` });
+  }
+
+  if (seat.status === "booked") {
+    return res.status(400).json({ message: `Seat ${id} is already booked.` });
+  }
+});
+
+// POST /confirm/:id
+app.post("/confirm/:id", (req, res) => {
+  const id = req.params.id;
+  const seat = seats[id];
+  if (!seat) return res.status(404).json({ message: "Seat not found." });
+
+  expireLock(id);
+
+  if (seat.status === "locked") {
+    clearTimeout(seat.lockTimer);
+    seat.status = "booked";
+    seat.lockExpiresAt = null;
+    seat.lockTimer = null;
+    return res.json({ message: `Seat ${id} booked successfully!` });
+  }
+
+  return res
+    .status(400)
+    .json({ message: `Seat ${id} is not locked and cannot be booked.` });
+});
+
+const port = 3000;
+app.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
+});
